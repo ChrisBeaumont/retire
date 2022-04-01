@@ -141,4 +141,4 @@ class StableRetirement(OptimizingStrategy):
 
 
 if __name__ == "__main__":
-    StableRetirement(age_range=(119, 120))._build_interpolators()
+    StableRetirement(age_range=(119, 120))._build_cache()

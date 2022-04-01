@@ -1,10 +1,13 @@
 from abc import ABCMeta, abstractmethod
 from typing import Sequence, Tuple, Hashable, Optional
+from concurrent.futures.process import BrokenProcessPool
 from itertools import product, groupby
+from functools import partial
 from operator import itemgetter
 import warnings
 
 from tqdm.auto import tqdm
+from tqdm.contrib.concurrent import process_map
 from scipy.interpolate import RegularGridInterpolator, interp1d
 import numpy as np
 import pandas as pd
@@ -12,6 +15,12 @@ import numpy.typing as npt
 
 __all__ = ["Record", "Decision", "State", "Strategy", "OptimizingStrategy"]
 
+def auto_map(func, args, **tqdm_kwargs):
+    #try:
+    #    return process_map(func, args, **tqdm_kwargs)
+    #except BrokenProcessPool:
+    #    warnings.warn("Could not run in parallel. Falling back.")
+        return list(tqdm((func(arg) for arg in args), **tqdm_kwargs))
 
 class Record:
 
@@ -112,11 +121,11 @@ class Strategy(metaclass=ABCMeta):
           arrives at a terminal state.
         """
         return pd.concat([
-            self._simulate_one(initial_state, steps).assign(simulation=i)
-            for i in tqdm(range(simulations), desc='Simulating outcome', disable=not self.verbose)
+            df.assign(simulation=i)
+            for i, df in enumerate(auto_map(partial(self._simulate_one, initial_state, steps), range(simulations), desc='Starting outcome', disable=not self.verbose))
         ], ignore_index=True)
 
-    def _simulate_one(self, initial_state: State, steps: int):
+    def _simulate_one(self, initial_state: State, steps: int, *args):
         states = []
         decisions = []
         state = initial_state
@@ -206,7 +215,7 @@ class OptimizingStrategy(Strategy):
 
     def decide(self, state) -> Tuple[Optional[Decision], float]:
         if not self._is_cached:
-            self._build_interpolators()
+            self._build_cache()
 
         if self.is_terminal_state(state) or state.age >= self.age_range[1]:
             return None, self.terminal_utility(state)
@@ -215,7 +224,7 @@ class OptimizingStrategy(Strategy):
 
     def simulate(self, initial_state: State, steps: int, *, simulations: int) -> pd.DataFrame:
         if not self._is_cached:
-            self._build_interpolators()
+            self._build_cache()
         return super().simulate(initial_state, steps, simulations=simulations)
 
     def decision_utility(self, state, decision):
@@ -230,32 +239,33 @@ class OptimizingStrategy(Strategy):
         )
         return instant_utility + future_utility
 
-    def _build_interpolators(self):
+    def _build_cache(self):
         self._is_cached = True
         lo, hi = self.age_range
         for age in tqdm(list(reversed(range(lo, hi + 1))), desc='Solving optimal strategy', disable=not self.verbose):
-            self._interpolate_for_age(age)
+            self._cache_for_age(age)
 
-    def _interpolate_for_age(self, age: int):
-        discrete_substate_names = [key for key, _ in self.discrete_substates]
-        interpolated_substate_names = [key for key, _ in self.interpolated_substates]
-        grid_shape = [len(v) for state in [self.discrete_substates, self.interpolated_substates] for _, v in state]
-        total_cells = np.product(grid_shape)
+    def _cache_for_age(self, age: int):
+        discrete_points = list(product(*(vals for key, vals in self.discrete_substates)))
+        interpolated_values = auto_map(
+            partial(self._build_interpolation, age),
+            discrete_points,
+            desc=f"Optimizing age={age}", disable=not self.verbose, leave=None
+        )
+        for discrete_point, values in zip(discrete_points, interpolated_values):
+            self._store_interpolation((age, *discrete_point), values)
 
-        with tqdm(total=total_cells, desc=f'Optimizing Age={age}', disable=not self.verbose, leave=None) as counter:
-            for discrete_point in product(*(vals for key, vals in self.discrete_substates)):
-                values = []
-                for interpolated_point in product(*(vals for key, vals in self.interpolated_substates)):
-                    state = State(
-                        age=age,
-                        **{k: v for k, v in zip(discrete_substate_names, discrete_point)},
-                        **{k: v for k, v in zip(interpolated_substate_names, interpolated_point)}
-                    )
-                    _, value = self.decide(state)
-                    values.append(value)
-                    counter.update(1)
-
-                self._store_interpolation((age, *discrete_point), values)
+    def _build_interpolation(self, age: int, discrete_point):
+        interpolated_points = product(*(vals for key, vals in self.interpolated_substates))
+        states = [
+            State(
+                age=age,
+                **{k: v for (k, _), v in zip(self.discrete_substates, discrete_point)},
+                **{k: v for (k, _), v in zip(self.interpolated_substates, interpolated_point)}
+            )
+            for interpolated_point in interpolated_points
+        ]
+        return [self.decide(s)[1] for s in states]
 
     def _store_interpolation(self, key: Tuple[Hashable], values: Sequence[float]) -> None:
         grid = [v for _, v in self.interpolated_substates]

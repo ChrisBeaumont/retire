@@ -67,7 +67,7 @@ class TestStrategy:
 
     def test_build_interpolation(self):
         s = SampleStrategy()
-        s._build_interpolators()
+        s._build_cache()
         assert set(s._interpolators.keys()) == {(119,), (120,)}
 
         assert s.decide(State(age=120, assets=1)) == (None, 1)
@@ -108,7 +108,7 @@ class TestStrategy:
             interpolated_substates = [('assets', [1, 2, 3, 4]), ('extra', [1, 2, 3])]
 
         s = Strat()
-        s._build_interpolators()
+        s._build_cache()
         assert s._interpolate_values([State(assets=1, age=120, extra=1)]) == [1]
         assert s._interpolators[(120,)]((1, 1)) == 1
 

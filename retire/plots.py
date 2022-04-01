@@ -2,7 +2,7 @@ from plotnine import *
 
 
 def plot_retirement_assets(simulation, standard_of_living):
-    simulation = simulation.query('retired==True').dronpa()
+    simulation = simulation.query('retired==True').dropna()
     under_funded = simulation.groupby('simulation').filter(lambda df: df.spend.min() < standard_of_living)
 
     return (
@@ -52,10 +52,10 @@ def plot_retirement_age(simulation, standard_of_living):
 
 
 def plot_spend_timeline(simulation, standard_of_living):
-    under_funded = simulation.groupby('simulation').filter(lambda df: df.spend.min() < standard_of_living)
+    under_funded = simulation.dropna().groupby('simulation').filter(lambda df: df.spend.min() < standard_of_living)
 
     return (
-        simulation
+        simulation.dropna()
         .groupby('age').spend
         .quantile([.025, .5, .975])
         .unstack(level=1)
